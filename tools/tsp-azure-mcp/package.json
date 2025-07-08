@@ -1,0 +1,65 @@
+{
+  "name": "@azure-tools/typespec-azure-mcp",
+  "version": "0.1.0",
+  "description": "An MCP server for onboarding Azure services to TypeSpec",
+  "main": "dist/index.js",
+  "homepage": "https://github.com/Azure/azure-sdk-tools/tree/main/tools/tsp-azure-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Azure/azure-sdk-tools.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Azure/azure-sdk-tools/issues"
+  },
+  "scripts": {
+    "build": "npm run clean && npm run build:tsp && npm run build:tsc",
+    "build:tsc": "tsc",
+    "build:tsp": "tsp compile ./main.tsp",
+    "clean": "rimraf ./dist",
+    "purge": "rimraf ./node_modules package-lock.json",
+    "prepack": "npm run build",
+    "test": "vitest run",
+    "inspect": "mcp-inspector node ./dist/mcp-server.js"
+  },
+  "author": "Microsoft Corporation",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": "^18.19.0 || >=20.6.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "devDependencies": {
+    "@eslint/js": "^9.28.0",
+    "@modelcontextprotocol/inspector": "^0.15.0",
+    "@types/cross-spawn": "^6.0.6",
+    "@types/node": "^20.4.8",
+    "@typespec/prettier-plugin-typespec": "^1.1.0",
+    "@vitest/eslint-plugin": "^1.2.1",
+    "eslint": "^9.23.0",
+    "prettier": "^3.0.1",
+    "prettier-plugin-organize-imports": "^4.1.0",
+    "rimraf": "^5.0.1",
+    "ts-node": "^10.9.1",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.33.0",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "@azure-tools/typespec-client-generator-cli": "^0.24.0",
+    "@modelcontextprotocol/sdk": "^1.15.0",
+    "@typespec/compiler": "^1.1.0",
+    "cross-spawn": "^7.0.6",
+    "typespec-mcp": "^0.0.0-95",
+    "typespec-mcp-server-csharp": "^0.0.0-95",
+    "typespec-mcp-server-js": "^0.0.0-95",
+    "zod": "^3.24.2",
+    "zod-to-json-schema": "^3.24.5",
+    "zod-validation-error": "^3.4.0"
+  },
+  "overrides": {
+    "@typespec/emitter-framework": "^0.9.0-dev"
+  }
+}
