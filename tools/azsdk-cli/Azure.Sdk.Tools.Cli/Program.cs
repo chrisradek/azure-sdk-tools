@@ -76,6 +76,10 @@ public class Program
         };
         builder.Services.AddSingleton<IOutputHelper>(new OutputHelper(outputMode));
 
+        // Configure options
+        builder.Services.Configure<Azure.Sdk.Tools.Cli.Options.AiCompletionOptions>(
+            builder.Configuration.GetSection(Azure.Sdk.Tools.Cli.Options.AiCompletionOptions.SectionName));
+
         // register common services
         ServiceRegistrations.RegisterCommonServices(builder.Services);
 

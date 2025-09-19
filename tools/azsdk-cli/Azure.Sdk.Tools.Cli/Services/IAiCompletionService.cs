@@ -11,8 +11,6 @@ namespace Azure.Sdk.Tools.Cli.Services
         /// Sends a completion request to the AI service.
         /// </summary>
         /// <param name="request">The completion request containing the question and parameters</param>
-        /// <param name="apiKey">Optional API key override</param>
-        /// <param name="endpoint">Optional endpoint override</param>
         /// <param name="cancellationToken">Cancellation token</param>
         /// <returns>The completion response from the AI service</returns>
         /// <exception cref="ArgumentNullException">Thrown when request is null</exception>
@@ -20,8 +18,6 @@ namespace Azure.Sdk.Tools.Cli.Services
         /// <exception cref="InvalidOperationException">Thrown when the service call fails</exception>
         Task<CompletionResponse> SendCompletionRequestAsync(
             CompletionRequest request,
-            string? apiKey = null,
-            string? endpoint = null,
             CancellationToken cancellationToken = default);
 
         /// <summary>
