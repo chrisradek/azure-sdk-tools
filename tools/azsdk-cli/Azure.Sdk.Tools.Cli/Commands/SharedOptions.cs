@@ -11,6 +11,7 @@ using Azure.Sdk.Tools.Cli.Tools.Verify;
 using Azure.Sdk.Tools.Cli.Tools.APIView;
 using Azure.Sdk.Tools.Cli.Tools.Package.Samples;
 using Azure.Sdk.Tools.Cli.Tools.Core;
+using Azure.Sdk.Tools.Cli.Tools.Workflow;
 
 namespace Azure.Sdk.Tools.Cli.Commands
 {
@@ -18,7 +19,7 @@ namespace Azure.Sdk.Tools.Cli.Commands
     {
         public static readonly List<Type> ToolsList = [
             typeof(PipelineTool),
-            typeof(PipelineAnalysisTool),            
+            typeof(PipelineAnalysisTool),
             typeof(CodeownersTool),
             typeof(GitHubLabelsTool),
             typeof(LogAnalysisTool),
@@ -37,7 +38,7 @@ namespace Azure.Sdk.Tools.Cli.Commands
             typeof(VersionUpdateTool),
             typeof(SdkReleaseTool),
             typeof(SpecCommonTools),
-            typeof(PullRequestTools),            
+            typeof(PullRequestTools),
             typeof(SpecValidationTools),
             typeof(TestAnalysisTool),
             typeof(TypeSpecConvertTool),
@@ -48,6 +49,8 @@ namespace Azure.Sdk.Tools.Cli.Commands
             typeof(VerifySetupTool),
             typeof(TestTool),
             typeof(ListCommandTool),
+            typeof(SdkFixTool),
+            typeof(SdkCustomizationWorkflowTool),
 #if DEBUG
             // only add these tools in debug mode
             typeof(CleanupTool),
