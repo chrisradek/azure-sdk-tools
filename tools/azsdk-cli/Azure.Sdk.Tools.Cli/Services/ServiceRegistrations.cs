@@ -15,6 +15,7 @@ using Azure.Sdk.Tools.Cli.Telemetry;
 using Azure.Sdk.Tools.Cli.Tools.Core;
 using Azure.Sdk.Tools.Cli.Services.APIView;
 using Azure.Sdk.Tools.Cli.Services.Languages;
+using Azure.Sdk.Tools.Cli.Services.TypeSpec;
 
 
 namespace Azure.Sdk.Tools.Cli.Services
@@ -76,6 +77,8 @@ namespace Azure.Sdk.Tools.Cli.Services
             services.AddScoped<IAzureAgentServiceFactory, AzureAgentServiceFactory>();
             services.AddScoped<ICommonValidationHelpers, CommonValidationHelpers>();
 
+            // TypeSpec Services
+            services.AddScoped<ITypeSpecCustomizationService, TypeSpecCustomizationService>();
 
             // Telemetry
             services.AddSingleton<ITelemetryService, TelemetryService>();
