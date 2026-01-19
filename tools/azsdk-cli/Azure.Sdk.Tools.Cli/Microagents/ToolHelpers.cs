@@ -103,6 +103,16 @@ public static class ToolHelpers
     public static string GetJsonSchemaRepresentation(Type schema)
     {
         var node = JsonSerializerOptions.Default.GetJsonSchemaAsNode(schema, exporterOptions);
+
+        // Ensure object types always have a properties field (OpenAI requires this)
+        if (node is JsonObject jObj &&
+            jObj.TryGetPropertyValue("type", out var typeNode) &&
+            typeNode?.GetValue<string>() == "object" &&
+            !jObj.ContainsKey("properties"))
+        {
+            jObj["properties"] = new JsonObject();
+        }
+
         return node.ToString();
     }
 }
