@@ -51,10 +51,50 @@ public class WorkflowResponse : CommandResponse
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Summary { get; set; }
 
+    /// <summary>
+    /// When true, the agent MUST call this workflow tool again after completing the current step.
+    /// The workflow cannot proceed without this callback.
+    /// </summary>
+    [JsonPropertyName("continuation_required")]
+    public bool ContinuationRequired { get; set; }
+
+    /// <summary>
+    /// Explicit instruction for how to continue the workflow. This should be followed exactly.
+    /// </summary>
+    [JsonPropertyName("continuation_instruction")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ContinuationInstruction { get; set; }
+
+    /// <summary>
+    /// Progress tracking to show how far along the workflow is.
+    /// </summary>
+    [JsonPropertyName("progress")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public WorkflowProgress? Progress { get; set; }
+
     protected override string Format()
     {
-        return $"[{Phase}] {Message}";
+        var progress = Progress != null ? $" (Step {Progress.CurrentStep}/{Progress.TotalSteps})" : "";
+        return $"[{Phase}]{progress} {Message}";
     }
+}
+
+/// <summary>
+/// Tracks workflow progress to make it clear the workflow is not complete.
+/// </summary>
+public class WorkflowProgress
+{
+    [JsonPropertyName("current_step")]
+    public int CurrentStep { get; set; }
+
+    [JsonPropertyName("total_steps")]
+    public int TotalSteps { get; set; }
+
+    [JsonPropertyName("completed_steps")]
+    public List<string> CompletedSteps { get; set; } = new();
+
+    [JsonPropertyName("remaining_steps")]
+    public List<string> RemainingSteps { get; set; } = new();
 }
 
 /// <summary>

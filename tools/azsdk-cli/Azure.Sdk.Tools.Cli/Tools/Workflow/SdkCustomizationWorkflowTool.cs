@@ -7,18 +7,22 @@ using Azure.Sdk.Tools.Cli.Commands;
 using Azure.Sdk.Tools.Cli.Models;
 using Azure.Sdk.Tools.Cli.Models.Workflow;
 using Azure.Sdk.Tools.Cli.Services;
+using Azure.Sdk.Tools.Cli.Tools.Package;
 using ModelContextProtocol.Server;
 
 namespace Azure.Sdk.Tools.Cli.Tools.Workflow;
 
 /// <summary>
 /// Coordinates SDK customization workflow for fixing build errors and applying customizations.
-/// This tool acts as a pure state machine - it tracks state and returns instructions for Copilot.
+/// This tool acts as a state machine that handles regeneration and building internally,
+/// only returning to the agent for classification and fix application steps.
 /// </summary>
 [McpServerToolType, Description("Coordinates SDK customization workflow for fixing build errors and applying customizations")]
 public class SdkCustomizationWorkflowTool(
     ILogger<SdkCustomizationWorkflowTool> logger,
-    IWorkflowStateService workflowStateService
+    IWorkflowStateService workflowStateService,
+    SdkGenerationTool generationTool,
+    SdkBuildTool buildTool
 ) : MCPTool
 {
     private const string ToolName = "azsdk_sdk_customization_workflow";
@@ -108,11 +112,11 @@ public class SdkCustomizationWorkflowTool(
             // Determine mode: start vs continue
             if (string.IsNullOrEmpty(workflowId))
             {
-                return await Task.FromResult(StartWorkflow(request, requestType, packagePath, typeSpecPath, maxIterations));
+                return StartWorkflow(request, requestType, packagePath, typeSpecPath, maxIterations);
             }
             else
             {
-                return await Task.FromResult(ContinueWorkflow(workflowId, result));
+                return await ContinueWorkflowAsync(workflowId, result, ct);
             }
         }
         catch (Exception ex)
@@ -169,11 +173,14 @@ public class SdkCustomizationWorkflowTool(
             Instruction = BuildClassificationInstruction(request),
             ExpectedResult = BuildClassificationExpectedResult(),
             WorkflowId = newWorkflowId,
-            IsComplete = false
+            IsComplete = false,
+            ContinuationRequired = true,
+            ContinuationInstruction = BuildContinuationInstruction(newWorkflowId, "classifying the errors"),
+            Progress = BuildProgress(state, "Classify", new List<string>(), new List<string> { "Fix", "Build", "Verify" })
         };
     }
 
-    private WorkflowResponse ContinueWorkflow(string workflowId, string? resultJson)
+    private async Task<WorkflowResponse> ContinueWorkflowAsync(string workflowId, string? resultJson, CancellationToken ct)
     {
         // Look up state from in-memory storage
         var state = workflowStateService.GetWorkflow(workflowId);
@@ -210,7 +217,7 @@ public class SdkCustomizationWorkflowTool(
             workflowId, state.Phase, result.Type);
 
         // Apply state transition
-        var response = ApplyTransition(state, result);
+        var response = await ApplyTransitionAsync(state, result, ct);
 
         // Update state in storage (unless complete)
         if (response.IsComplete)
@@ -226,15 +233,13 @@ public class SdkCustomizationWorkflowTool(
     }
 
     // State machine logic
-    private WorkflowResponse ApplyTransition(WorkflowState state, StepResult result)
+    private async Task<WorkflowResponse> ApplyTransitionAsync(WorkflowState state, StepResult result, CancellationToken ct)
     {
         return state.Phase switch
         {
             WorkflowPhase.Classify => HandleClassifyResult(state, result),
-            WorkflowPhase.AttemptTspFix => HandleTspFixResult(state, result),
-            WorkflowPhase.Regenerate => HandleRegenerateResult(state, result),
-            WorkflowPhase.AttemptSdkFix => HandleSdkFixResult(state, result),
-            WorkflowPhase.Build => HandleBuildResult(state, result),
+            WorkflowPhase.AttemptTspFix => await HandleTspFixResultAsync(state, result, ct),
+            WorkflowPhase.AttemptSdkFix => await HandleSdkFixResultAsync(state, result, ct),
             _ => CreateErrorResponse($"Invalid phase for transition: {state.Phase}")
         };
     }
@@ -274,7 +279,10 @@ public class SdkCustomizationWorkflowTool(
                 },
                 ExpectedResult = BuildTspFixExpectedResult(),
                 WorkflowId = state.WorkflowId,
-                IsComplete = false
+                IsComplete = false,
+                ContinuationRequired = true,
+                ContinuationInstruction = BuildContinuationInstruction(state.WorkflowId, "applying TypeSpec decorators"),
+                Progress = BuildProgress(state, "AttemptTspFix", new List<string> { "Classify" }, new List<string> { "Verify" })
             };
         }
         else
@@ -297,12 +305,15 @@ public class SdkCustomizationWorkflowTool(
                 },
                 ExpectedResult = BuildSdkFixExpectedResult(),
                 WorkflowId = state.WorkflowId,
-                IsComplete = false
+                IsComplete = false,
+                ContinuationRequired = true,
+                ContinuationInstruction = BuildContinuationInstruction(state.WorkflowId, "running the SDK fix tool"),
+                Progress = BuildProgress(state, "AttemptSdkFix", new List<string> { "Classify" }, new List<string> { "Verify" })
             };
         }
     }
 
-    private WorkflowResponse HandleTspFixResult(WorkflowState state, StepResult result)
+    private async Task<WorkflowResponse> HandleTspFixResultAsync(WorkflowState state, StepResult result, CancellationToken ct)
     {
         state.History.Add(new WorkflowHistoryEntry
         {
@@ -315,24 +326,56 @@ public class SdkCustomizationWorkflowTool(
 
         if (result.Type == "tsp_fix_applied")
         {
-            // TSP fix applied, need to regenerate
-            state.Phase = WorkflowPhase.Regenerate;
-            return new WorkflowResponse
+            // TSP fix applied - regenerate and build internally
+            logger.LogInformation("TypeSpec fix applied, regenerating SDK for {packagePath}", state.PackagePath);
+            
+            // Regenerate SDK
+            var generateResult = await generationTool.GenerateSdkAsync(
+                localSdkRepoPath: state.PackagePath,
+                tspConfigPath: null,
+                tspLocationPath: null,  // Will discover from package
+                emitterOptions: null,
+                ct: ct);
+
+            state.History.Add(new WorkflowHistoryEntry
             {
+                Iteration = state.Iteration,
                 Phase = WorkflowPhase.Regenerate,
-                Message = "TypeSpec fix applied. Regenerating SDK...",
-                RunTool = new ToolSuggestion
+                Action = "SDK regeneration (internal)",
+                Result = generateResult.OperationStatus == Status.Succeeded ? "success" : "failure",
+                Details = generateResult.ResponseError
+            });
+
+            if (generateResult.OperationStatus != Status.Succeeded)
+            {
+                state.Phase = WorkflowPhase.Failure;
+                return new WorkflowResponse
                 {
-                    Name = "azsdk_package_generate",
-                    Args = new Dictionary<string, string>
-                    {
-                        ["packagePath"] = state.PackagePath
-                    }
-                },
-                ExpectedResult = BuildGenerateExpectedResult(),
-                WorkflowId = state.WorkflowId,
-                IsComplete = false
-            };
+                    Phase = WorkflowPhase.Failure,
+                    Message = "❌ SDK regeneration failed after TypeSpec fix.",
+                    IsComplete = true,
+                    Status = "failure",
+                    Summary = GenerateSummary(state, "Regeneration failed"),
+                    WorkflowId = state.WorkflowId,
+                    ResponseError = generateResult.ResponseError ?? "Regeneration failed",
+                    ContinuationRequired = false
+                };
+            }
+
+            // Build SDK
+            logger.LogInformation("SDK regenerated, building to verify fix for {packagePath}", state.PackagePath);
+            var buildResult = await buildTool.BuildSdkAsync(state.PackagePath, ct);
+
+            state.History.Add(new WorkflowHistoryEntry
+            {
+                Iteration = state.Iteration,
+                Phase = WorkflowPhase.Build,
+                Action = "Build verification (internal)",
+                Result = buildResult.OperationStatus == Status.Succeeded ? "success" : "failure",
+                Details = buildResult.ResponseError
+            });
+
+            return HandleBuildOutcome(state, buildResult);
         }
         else
         {
@@ -354,63 +397,15 @@ public class SdkCustomizationWorkflowTool(
                 },
                 ExpectedResult = BuildSdkFixExpectedResult(),
                 WorkflowId = state.WorkflowId,
-                IsComplete = false
+                IsComplete = false,
+                ContinuationRequired = true,
+                ContinuationInstruction = BuildContinuationInstruction(state.WorkflowId, "running the SDK fix tool"),
+                Progress = BuildProgress(state, "AttemptSdkFix", new List<string> { "Classify", "TypeSpec Fix (skipped)" }, new List<string> { "Verify" })
             };
         }
     }
 
-    private WorkflowResponse HandleRegenerateResult(WorkflowState state, StepResult result)
-    {
-        var success = result.Success ?? false;
-
-        state.History.Add(new WorkflowHistoryEntry
-        {
-            Iteration = state.Iteration,
-            Phase = WorkflowPhase.Regenerate,
-            Action = "SDK regeneration",
-            Result = success ? "success" : "failure",
-            Details = result.Errors ?? result.Output
-        });
-
-        if (success)
-        {
-            // Regeneration successful, now build
-            state.Phase = WorkflowPhase.Build;
-            return new WorkflowResponse
-            {
-                Phase = WorkflowPhase.Build,
-                Message = "SDK regenerated. Building to verify fix...",
-                RunTool = new ToolSuggestion
-                {
-                    Name = "azsdk_package_build",
-                    Args = new Dictionary<string, string>
-                    {
-                        ["packagePath"] = state.PackagePath
-                    }
-                },
-                ExpectedResult = BuildBuildExpectedResult(),
-                WorkflowId = state.WorkflowId,
-                IsComplete = false
-            };
-        }
-        else
-        {
-            // Regeneration failed - terminal
-            state.Phase = WorkflowPhase.Failure;
-            return new WorkflowResponse
-            {
-                Phase = WorkflowPhase.Failure,
-                Message = "SDK regeneration failed.",
-                IsComplete = true,
-                Status = "failure",
-                Summary = GenerateSummary(state, "Regeneration failed"),
-                WorkflowId = state.WorkflowId,
-                ResponseError = result.Errors ?? "Regeneration failed"
-            };
-        }
-    }
-
-    private WorkflowResponse HandleSdkFixResult(WorkflowState state, StepResult result)
+    private async Task<WorkflowResponse> HandleSdkFixResultAsync(WorkflowState state, StepResult result, CancellationToken ct)
     {
         state.History.Add(new WorkflowHistoryEntry
         {
@@ -423,24 +418,20 @@ public class SdkCustomizationWorkflowTool(
 
         if (result.Type == "sdk_fix_applied")
         {
-            // SDK fix applied, go directly to build (no regeneration needed)
-            state.Phase = WorkflowPhase.Build;
-            return new WorkflowResponse
+            // SDK fix applied - build directly (no regeneration needed for SDK fixes)
+            logger.LogInformation("SDK fix applied, building to verify fix for {packagePath}", state.PackagePath);
+            var buildResult = await buildTool.BuildSdkAsync(state.PackagePath, ct);
+
+            state.History.Add(new WorkflowHistoryEntry
             {
+                Iteration = state.Iteration,
                 Phase = WorkflowPhase.Build,
-                Message = "SDK fix applied. Building to verify fix...",
-                RunTool = new ToolSuggestion
-                {
-                    Name = "azsdk_package_build",
-                    Args = new Dictionary<string, string>
-                    {
-                        ["packagePath"] = state.PackagePath
-                    }
-                },
-                ExpectedResult = BuildBuildExpectedResult(),
-                WorkflowId = state.WorkflowId,
-                IsComplete = false
-            };
+                Action = "Build verification (internal)",
+                Result = buildResult.OperationStatus == Status.Succeeded ? "success" : "failure",
+                Details = buildResult.ResponseError
+            });
+
+            return HandleBuildOutcome(state, buildResult);
         }
         else
         {
@@ -449,28 +440,23 @@ public class SdkCustomizationWorkflowTool(
             return new WorkflowResponse
             {
                 Phase = WorkflowPhase.Failure,
-                Message = "SDK fix could not be applied.",
+                Message = "❌ SDK fix could not be applied.",
                 IsComplete = true,
                 Status = "failure",
                 Summary = GenerateSummary(state, "SDK fix failed"),
                 WorkflowId = state.WorkflowId,
-                ResponseError = result.Reason ?? "SDK fix failed"
+                ResponseError = result.Reason ?? "SDK fix failed",
+                ContinuationRequired = false
             };
         }
     }
 
-    private WorkflowResponse HandleBuildResult(WorkflowState state, StepResult result)
+    /// <summary>
+    /// Shared handler for build outcomes - used after both TSP fix+regenerate and SDK fix paths.
+    /// </summary>
+    private WorkflowResponse HandleBuildOutcome(WorkflowState state, Models.Responses.Package.PackageOperationResponse buildResult)
     {
-        var success = result.Success ?? false;
-
-        state.History.Add(new WorkflowHistoryEntry
-        {
-            Iteration = state.Iteration,
-            Phase = WorkflowPhase.Build,
-            Action = "Build verification",
-            Result = success ? "success" : "failure",
-            Details = result.Errors ?? result.Output
-        });
+        var success = buildResult.OperationStatus == Status.Succeeded;
 
         if (success)
         {
@@ -479,16 +465,19 @@ public class SdkCustomizationWorkflowTool(
             return new WorkflowResponse
             {
                 Phase = WorkflowPhase.Success,
-                Message = "Build succeeded! Workflow complete.",
+                Message = "✅ Build succeeded! Workflow complete.",
                 IsComplete = true,
                 Status = "success",
                 Summary = GenerateSummary(state, "Build succeeded"),
-                WorkflowId = state.WorkflowId
+                WorkflowId = state.WorkflowId,
+                ContinuationRequired = false,
+                Progress = BuildProgress(state, "Complete", new List<string> { "Classify", "Fix", "Verify" }, new List<string>())
             };
         }
 
-        // Build failed - update errors and check if we can retry
-        state.CurrentErrors = result.Errors ?? state.CurrentErrors;
+        // Build failed - extract errors and check if we can retry
+        var errors = buildResult.ResponseError ?? "Build failed";
+        state.CurrentErrors = errors;
         state.Iteration++;
 
         if (state.Iteration > state.MaxIterations)
@@ -497,12 +486,13 @@ public class SdkCustomizationWorkflowTool(
             return new WorkflowResponse
             {
                 Phase = WorkflowPhase.Failure,
-                Message = $"Max iterations ({state.MaxIterations}) reached. Build still failing.",
+                Message = $"❌ Max iterations ({state.MaxIterations}) reached. Build still failing.",
                 IsComplete = true,
                 Status = "failure",
                 Summary = GenerateSummary(state, "Max iterations reached"),
                 WorkflowId = state.WorkflowId,
-                ResponseError = "Max iterations reached without successful build"
+                ResponseError = errors,
+                ContinuationRequired = false
             };
         }
 
@@ -515,20 +505,45 @@ public class SdkCustomizationWorkflowTool(
             Instruction = BuildClassificationInstruction(state.CurrentErrors),
             ExpectedResult = BuildClassificationExpectedResult(),
             WorkflowId = state.WorkflowId,
-            IsComplete = false
+            IsComplete = false,
+            ContinuationRequired = true,
+            ContinuationInstruction = BuildContinuationInstruction(state.WorkflowId, "classifying the new errors"),
+            Progress = BuildProgress(state, "Classify", new List<string> { $"Iteration {state.Iteration - 1} (failed)" }, new List<string> { "Fix", "Verify" })
         };
     }
 
     private static string BuildClassificationInstruction(string errors)
     {
-        return $@"Use runSubagent to analyze these build errors and determine if any could potentially be fixed with TypeSpec client.tsp customizations. Have the subagent read `eng/common/knowledge/customizing-client-tsp.md` to understand the allowed customizations and their usage.
+        return $@"TASK: Analyze these build errors and determine if any could potentially be fixed with TypeSpec client.tsp customizations.
+
+Use runSubagent to read `eng/common/knowledge/customizing-client-tsp.md` to understand the allowed customizations and their usage. You must use a subagent to preserve your context window.
 
 Build Errors:
 {errors}
 
-Respond with a JSON object: {{""type"": ""classification"", ""tspApplicable"": true/false}}
+After analysis, respond with a JSON object: {{""type"": ""classification"", ""tspApplicable"": true/false}}
 
 Set tspApplicable to true if TypeSpec decorators could help fix any of these errors (naming issues, visibility, model usage). Set to false for implementation issues, logic errors, or issues that require code changes.";
+    }
+
+    private static string BuildContinuationInstruction(string workflowId, string actionDescription)
+    {
+        return $@"⚠️ CRITICAL: After {actionDescription}, you MUST immediately call the azsdk_sdk_customization_workflow tool again with:
+  - workflowId: ""{workflowId}""
+  - result: <JSON result of the completed action>
+
+DO NOT proceed to other tasks. DO NOT report completion to the user. The workflow is NOT complete until you receive a response with is_complete=true.";
+    }
+
+    private static WorkflowProgress BuildProgress(WorkflowState state, string currentStepName, List<string> completedSteps, List<string> remainingSteps)
+    {
+        return new WorkflowProgress
+        {
+            CurrentStep = completedSteps.Count + 1,
+            TotalSteps = completedSteps.Count + 1 + remainingSteps.Count,
+            CompletedSteps = completedSteps,
+            RemainingSteps = remainingSteps
+        };
     }
 
     private static string BuildTspFixPrompt(WorkflowState state)
@@ -537,7 +552,7 @@ Set tspApplicable to true if TypeSpec decorators could help fix any of these err
             ? $"Package Path: {state.PackagePath}\n(Discover the TypeSpec project path from the package's tsp-location.yaml file)"
             : $"TypeSpec Path: {state.TypeSpecPath}";
 
-        return $@"Use runSubagent to fix the build errors that can be resolved through TypeSpec client.tsp customizations. Have the subagent read `eng/common/knowledge/customizing-client-tsp.md` to understand the allowed customizations and their usage.
+        return $@"Use runSubagent to fix the build errors that can be resolved through TypeSpec client.tsp customizations. Have the subagent read `eng/common/knowledge/customizing-client-tsp.md` to understand the allowed customizations and their usage.  You must use a subagent to preserve your context window.
 
 Build Errors:
 {state.CurrentErrors}
@@ -604,23 +619,6 @@ After making changes, respond with a JSON object:
         };
     }
 
-    private static ExpectedResult BuildGenerateExpectedResult()
-    {
-        return new ExpectedResult
-        {
-            Type = "generate_complete",
-            Description = "Result of SDK code generation",
-            Fields = new Dictionary<string, string>
-            {
-                ["type"] = "Must be \"generate_complete\"",
-                ["success"] = "Boolean: true if generation succeeded, false if it failed",
-                ["output"] = "Optional: generation output or summary",
-                ["errors"] = "If failed: error messages from generation"
-            },
-            Example = "{\"type\": \"generate_complete\", \"success\": true, \"output\": \"SDK generated successfully\"}"
-        };
-    }
-
     private static ExpectedResult BuildSdkFixExpectedResult()
     {
         return new ExpectedResult
@@ -637,23 +635,6 @@ After making changes, respond with a JSON object:
         };
     }
 
-    private static ExpectedResult BuildBuildExpectedResult()
-    {
-        return new ExpectedResult
-        {
-            Type = "build_complete",
-            Description = "Result of building the SDK package",
-            Fields = new Dictionary<string, string>
-            {
-                ["type"] = "Must be \"build_complete\"",
-                ["success"] = "Boolean: true if build succeeded, false if it failed",
-                ["output"] = "Optional: build output or summary",
-                ["errors"] = "If failed: build error messages"
-            },
-            Example = "{\"type\": \"build_complete\", \"success\": true}"
-        };
-    }
-
     #endregion
 
     private WorkflowResponse CreateErrorResponse(string message)
@@ -662,10 +643,11 @@ After making changes, respond with a JSON object:
         return new WorkflowResponse
         {
             Phase = WorkflowPhase.Failure,
-            Message = message,
+            Message = $"❌ {message}",
             ResponseError = message,
             IsComplete = true,
-            Status = "failure"
+            Status = "failure",
+            ContinuationRequired = false
         };
     }
 }
