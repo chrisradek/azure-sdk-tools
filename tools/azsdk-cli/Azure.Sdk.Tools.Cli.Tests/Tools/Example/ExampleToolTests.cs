@@ -11,6 +11,7 @@ using Azure.Sdk.Tools.Cli.Tests.Mocks.Services;
 using Azure.Sdk.Tools.Cli.Tests.TestHelpers;
 using Azure.Sdk.Tools.Cli.Tools.Example;
 using Azure.Sdk.Tools.Cli.Models.Responses.Package;
+using Azure.Sdk.Tools.Cli.CopilotAgents;
 
 namespace Azure.Sdk.Tools.Cli.Tests.Tools.Example;
 
@@ -23,6 +24,7 @@ internal class ExampleToolTests
     private Mock<IProcessHelper>? mockProcessHelper;
     private Mock<IPowershellHelper>? mockPowershellHelper;
     private Mock<Azure.Sdk.Tools.Cli.Microagents.IMicroagentHostService>? mockMicroagentHostService;
+    private Mock<ICopilotAgentRunner>? mockCopilotAgentRunner;
 
     [SetUp]
     public void Setup()
@@ -34,6 +36,7 @@ internal class ExampleToolTests
         mockProcessHelper = new Mock<IProcessHelper>();
         mockPowershellHelper = new Mock<IPowershellHelper>();
         mockMicroagentHostService = new Mock<Azure.Sdk.Tools.Cli.Microagents.IMicroagentHostService>();
+        mockCopilotAgentRunner = new Mock<ICopilotAgentRunner>();
 
         // Set up Azure service mock to return a mock credential
         var mockCredential = new Mock<TokenCredential>();
@@ -57,9 +60,10 @@ internal class ExampleToolTests
             mockDevOpsService.Object,
             mockGitHubService,
             mockMicroagentHostService.Object,
+            mockCopilotAgentRunner.Object,
             mockProcessHelper.Object,
             mockPowershellHelper.Object,
-            tokenUsageHelper: new TokenUsageHelper(new OutputHelper()),
+            new TokenUsageHelper(new OutputHelper()),
 #pragma warning disable CS8625 // Cannot convert null literal to non-nullable reference type.
             null
 #pragma warning restore CS8625 // Cannot convert null literal to non-nullable reference type.
@@ -245,7 +249,7 @@ internal class ExampleToolTests
     [Test]
     public async Task DemonstrateMicroagentFibonacci_Success()
     {
-        mockMicroagentHostService!.Setup(m => m.RunAgentToCompletion(It.IsAny<Azure.Sdk.Tools.Cli.Microagents.Microagent<int>>(), It.IsAny<CancellationToken>()))
+        mockCopilotAgentRunner!.Setup(m => m.RunAsync(It.IsAny<CopilotAgent<int>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(13);
 
         var response = await tool.DemonstrateMicroagentFibonacci(7);

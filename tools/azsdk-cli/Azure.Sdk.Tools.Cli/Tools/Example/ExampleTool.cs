@@ -10,7 +10,9 @@ using Azure.Sdk.Tools.Cli.Models;
 using Azure.Sdk.Tools.Cli.Services;
 using Azure.Sdk.Tools.Cli.Helpers;
 using Azure.Sdk.Tools.Cli.Microagents;
+using Azure.Sdk.Tools.Cli.CopilotAgents;
 using Azure.Sdk.Tools.Cli.Tools.Core;
+using Microsoft.Extensions.AI;
 
 namespace Azure.Sdk.Tools.Cli.Tools.Example;
 
@@ -22,6 +24,7 @@ public class ExampleTool(
     IDevOpsService devOpsService,
     IGitHubService gitHubService,
     IMicroagentHostService microagentHostService,
+    ICopilotAgentRunner copilotAgentRunner,
     IProcessHelper processHelper,
     IPowershellHelper powershellHelper,
     TokenUsageHelper tokenUsageHelper,
@@ -256,7 +259,7 @@ public class ExampleTool(
             // Get ChatClient from OpenAIClient
             var chatClient = openAIClient.GetChatClient(model);
 
-            var messages = new ChatMessage[]
+            var messages = new OpenAI.Chat.ChatMessage[]
             {
                 new SystemChatMessage("You are a helpful assistant."),
                 new UserChatMessage(userPrompt)
@@ -466,18 +469,18 @@ public class ExampleTool(
                 return new DefaultCommandResponse { ResponseError = "--fibonacci must be >= 2 to run the micro-agent" };
             }
 
-            var advanceTool = AgentTool<Fibonacci, Fibonacci>.FromFunc(
-                name: "advance_state",
-                description: "Advances state by one step",
-                invokeHandler: (input, ct) =>
+            var advanceTool = AIFunctionFactory.Create(
+                ([Description("Current fibonacci state")] Fibonacci state) =>
                 {
-                    return Task.FromResult(new Fibonacci
+                    return new Fibonacci
                     {
-                        Index = input.Index + 1,
-                        Previous = input.Current,
-                        Current = input.Previous + input.Current
-                    });
-                });
+                        Index = state.Index + 1,
+                        Previous = state.Current,
+                        Current = state.Previous + state.Current
+                    };
+                },
+                "advance_state",
+                "Advances state by one step");
 
             // Avoid mentioning 'fibonacci' in the instructions so the LLM doesn't try to calculate it directly
             var instructions = $"""
@@ -486,11 +489,12 @@ public class ExampleTool(
                 Initial state is {nameof(Fibonacci.Index)}=1, {nameof(Fibonacci.Previous)}=0, {nameof(Fibonacci.Current)}=1.
             """;
 
-            var agent = new Microagent<int>
+            var agent = new CopilotAgent<int>
             {
                 Instructions = instructions,
-                MaxToolCalls = 7,
+                MaxIterations = 7,
                 Tools = [advanceTool],
+                // Model = "claude-sonnet-4.5",  // Claude sometimes hangs - needs investigation
                 ValidateResult = async result =>
                 {
                     await Task.CompletedTask;
@@ -504,18 +508,18 @@ public class ExampleTool(
                     if (result != expected)
                     {
                         // Failure reason will be provided to the LLM to self-correct
-                        return new()
+                        return new CopilotAgentValidationResult
                         {
                             Success = false,
                             Reason = "Incorrect result, please try again"
                         };
                     }
 
-                    return new() { Success = true };
+                    return new CopilotAgentValidationResult { Success = true };
                 }
             };
 
-            var resultValue = await microagentHostService.RunAgentToCompletion(agent, ct);
+            var resultValue = await copilotAgentRunner.RunAsync(agent, ct);
 
             tokenUsageHelper.LogUsage();
             return new DefaultCommandResponse { Result = $"Fibonacci({n}) = {resultValue}" };
