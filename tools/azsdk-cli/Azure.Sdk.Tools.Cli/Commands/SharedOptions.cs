@@ -55,6 +55,7 @@ namespace Azure.Sdk.Tools.Cli.Commands
             typeof(CleanupTool),
             typeof(ExampleTool),
             typeof(HelloWorldTool),
+            typeof(TypeSpecCustomizationDemoTool),
 #endif
         ];
 
