@@ -28,6 +28,9 @@
 		},
 		"ghcr.io/devcontainers/features/github-cli:1": {
 			"version": "latest"
+		},
+		"features": {
+			"ghcr.io/devcontainers/features/copilot-cli:1": {}
 		}
 	},
 	"customizations": {
