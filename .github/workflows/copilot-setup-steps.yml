@@ -1,6 +1,15 @@
 name: Copilot Setup Steps
 
-on: workflow_dispatch
+# Automatically run the setup steps when they are changed to allow for easy validation, and
+# allow manual testing through the repository's "Actions" tab
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/copilot-setup-steps.yml"
+  pull_request:
+    paths:
+      - ".github/workflows/copilot-setup-steps.yml"
 
 jobs:
   copilot-setup-steps:
@@ -20,6 +29,9 @@ jobs:
           dotnet-version: |
             8.0.x
             9.0.x
+
+      - name: Install GitHub Copilot Cli
+        run: npm install -g @github/copilot
 
       - name: Build azsdk cli
         run: |
