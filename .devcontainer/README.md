@@ -13,6 +13,7 @@ The devcontainer is configured with the following tools and features:
 - **Docker-in-Docker** - For building and running containers
 - **Git & Git LFS** - For version control with large file support
 - **GitHub CLI** - For interacting with GitHub from the command line
+- **GitHub Copilot CLI** - For AI-powered command-line assistance
 
 ## Base Image
 
